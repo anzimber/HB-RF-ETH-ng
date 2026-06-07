@@ -29,6 +29,8 @@
 #include "udphelper.h"
 
 static const char *TAG = "RawUartUdpListener";
+static constexpr int64_t CCU_KEEPALIVE_INTERVAL_US = 500000;
+static constexpr int64_t CCU_KEEPALIVE_TIMEOUT_US = 10000000;
 
 void _raw_uart_udpQueueHandlerTask(void *parameter)
 {
@@ -317,7 +319,7 @@ void RawUartUdpListener::_udpQueueHandler()
         {
             int64_t now = esp_timer_get_time();
 
-            if (now > atomic_load(&_lastReceivedKeepAlive) + 10000000)
+            if (now > atomic_load(&_lastReceivedKeepAlive) + CCU_KEEPALIVE_TIMEOUT_US)
             { // 10 sec
                 ESP_LOGW(TAG, "CCU 3 connection timed out (no keep-alive for 10 seconds)");
                 atomic_store(&_connectionStarted, false);
@@ -327,7 +329,7 @@ void RawUartUdpListener::_udpQueueHandler()
             }
             else if (now > nextKeepAliveSentOut)
             {
-                nextKeepAliveSentOut = now + 1000000; // 1sec
+                nextKeepAliveSentOut = now + CCU_KEEPALIVE_INTERVAL_US;
                 sendMessage(2, NULL, 0);
             }
         }
