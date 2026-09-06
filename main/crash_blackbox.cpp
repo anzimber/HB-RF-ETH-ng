@@ -29,8 +29,10 @@
 #include "freertos/FreeRTOS.h"
 #include "esp_cpu.h"
 #include "esp_freertos_hooks.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/portmacro.h"
+#include "freertos/task.h"
 #include <cstdio>
 #include <cstring>
 
@@ -69,6 +71,17 @@ const crash_blackbox_t *crash_blackbox_read(void)
         return NULL;
     }
     return &s_blackbox;
+}
+
+void crash_blackbox_snapshot_now(uint32_t low_streak)
+{
+    const uint32_t secs = (uint32_t)((uint64_t)xTaskGetTickCount() *
+                                     portTICK_PERIOD_MS / 1000ULL);
+    crash_blackbox_update((uint32_t)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
+                          (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                          (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT),
+                          (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                          secs, low_streak);
 }
 
 void crash_blackbox_clear(void)

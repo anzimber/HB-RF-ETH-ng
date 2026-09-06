@@ -113,6 +113,13 @@ void crash_blackbox_update(uint32_t free_heap, uint32_t largest_block,
                            uint32_t min_heap, uint32_t internal_free,
                            uint32_t uptime_s, uint32_t low_streak);
 
+// Event-driven variant of crash_blackbox_update(): queries the heap and
+// uptime itself and takes a snapshot right NOW. Call at moments that tend to
+// precede or accompany a failure (network watchdog trigger, CCU keepalive
+// timeout, Ethernet link loss) so the slot holds the onset state, not just
+// the last 60 s grid point. Each call counts as one sample.
+void crash_blackbox_snapshot_now(uint32_t low_streak);
+
 // Returns a pointer to the stored sample if the magic matches (i.e. the RTC
 // slot contains data from before the current boot), or NULL otherwise. The
 // pointer is valid for the lifetime of the process.

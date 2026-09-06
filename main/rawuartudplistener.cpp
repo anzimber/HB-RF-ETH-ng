@@ -29,6 +29,7 @@
 #include "udphelper.h"
 #include "metrics.h"
 #include "events.h"
+#include "crash_blackbox.h"
 #include "esp_timer.h"
 
 static const char *TAG = "RawUartUdpListener";
@@ -610,6 +611,11 @@ void RawUartUdpListener::_udpQueueHandler()
                 connection_timeout)
             { // 10 sec
                 ESP_LOGW(TAG, "CCU 3 connection timed out (no keep-alive for 10 seconds)");
+                // Event snapshot: a keepalive timeout is the field signature
+                // that precedes many of the #362 failure states. Pin the
+                // blackbox to this moment so a subsequent watchdog reset
+                // shows the heap state at onset, not just the 60 s grid.
+                crash_blackbox_snapshot_now(0);
                 // Deliberately distinct from the explicit disconnect above:
                 // a silent timeout is the symptom users report as "switching
                 // commands stopped working", and the two are not the same

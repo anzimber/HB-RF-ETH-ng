@@ -52,6 +52,7 @@
 #include "systemclock.h"
 #include "reset_info.h"
 #include "crash_blackbox.h"
+#include "ping_service.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "sysinfo.h"
@@ -1276,10 +1277,28 @@ static constexpr size_t HEAP_WATCHDOG_CRITICAL_BYTES = 20 * 1024;
 static constexpr int HEAP_WATCHDOG_CONSECUTIVE_HITS = 8;     // ~8 * 60s = 8 min sustained
 static constexpr TickType_t HEAP_WATCHDOG_INTERVAL_TICKS = pdMS_TO_TICKS(60000);
 
+// Network wedge self-healing (issue #362): field units can end up with a
+// fully dead network stack - not even pingable - while the scheduler keeps
+// running, so no hardware watchdog fires and the device hangs until someone
+// pulls the plug. Probe the default gateway once per cycle; with the link
+// reporting up, the network having worked at least once this boot, and the
+// probe failing this many consecutive cycles, restart cleanly with a
+// diagnostic instead of hanging forever.
+//
+// The "worked at least once" guard keeps the detector passive on networks
+// where the gateway silently drops LAN ICMP - those devices would otherwise
+// boot-loop. A router that temporarily disappears (firmware update) fails
+// the probe too; the resulting single restart is harmless because the relay
+// is dead during that window anyway.
+static constexpr int NET_WATCHDOG_THRESHOLD_CYCLES = 5;      // ~5 * 60s = 5 min
+static constexpr uint32_t NET_WATCHDOG_PING_TIMEOUT_MS = 2000;
+
 static void heap_watchdog_task(void *pvParameters)
 {
     (void)pvParameters;
     int low_heap_streak = 0;
+    int net_fail_streak = 0;
+    bool net_ever_alive = false;
 
     for (;;)
     {
@@ -1357,6 +1376,72 @@ static void heap_watchdog_task(void *pvParameters)
         else
         {
             low_heap_streak = 0;
+        }
+
+        // ---- Network wedge detector (see comment above the constants) ----
+        if (g_ethernet != NULL && g_ethernet->isConnected())
+        {
+            ip4_addr_t ip, netmask, gw, dns1, dns2;
+            g_ethernet->getNetworkSettings(&ip, &netmask, &gw, &dns1, &dns2);
+            if (gw.addr != 0 && gw.addr != IPADDR_ANY)
+            {
+                char gw_str[IP4ADDR_STRLEN_MAX];
+                ip4addr_ntoa_r(&gw, gw_str, sizeof(gw_str));
+                // Synchronous probe; bounded by NET_WATCHDOG_PING_TIMEOUT_MS
+                // and this task runs at the lowest service priority.
+                int rtt_ms = ping_service_ping(gw_str, NET_WATCHDOG_PING_TIMEOUT_MS);
+                if (rtt_ms >= 0)
+                {
+                    net_ever_alive = true;
+                    if (net_fail_streak != 0)
+                    {
+                        ESP_LOGI(TAG, "Network watchdog: gateway %s reachable again (rtt %d ms)",
+                                 gw_str, rtt_ms);
+                        net_fail_streak = 0;
+                    }
+                }
+                else
+                {
+                    net_fail_streak++;
+                    // Capture the wedge onset before anything else happens
+                    // to the 60 s grid sample.
+                    if (net_fail_streak == 1)
+                    {
+                        crash_blackbox_snapshot_now((uint32_t)low_heap_streak);
+                    }
+                    ESP_LOGW(TAG, "Network watchdog: gateway %s unreachable (streak %d/%d, ever_alive=%d)",
+                             gw_str, net_fail_streak, NET_WATCHDOG_THRESHOLD_CYCLES,
+                             net_ever_alive ? 1 : 0);
+
+                    if (net_ever_alive &&
+                        net_fail_streak >= NET_WATCHDOG_THRESHOLD_CYCLES)
+                    {
+                        crash_blackbox_snapshot_now((uint32_t)low_heap_streak);
+                        // Keep in sync with last_diag_buffer[96] in reset_info.cpp.
+                        char diag[80];
+                        snprintf(diag, sizeof(diag),
+                                 "net watchdog: gw %s unreachable %d min, link up, free=%u",
+                                 gw_str, net_fail_streak,
+                                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+                        ESP_LOGE(TAG, "Network stack dead for %d consecutive checks - restarting (%s)",
+                                 net_fail_streak, diag);
+                        LogManager::instance().saveCrashTailNvs("net_watchdog");
+                        ResetInfo::storeResetReason(RESET_REASON_WATCHDOG, diag);
+                        vTaskDelay(pdMS_TO_TICKS(200));
+                        esp_restart();
+                    }
+                }
+            }
+            else
+            {
+                // No gateway known (unusual addressing) - stay passive.
+                net_fail_streak = 0;
+            }
+        }
+        else
+        {
+            // Link down is its own, visible event path; do not double-report.
+            net_fail_streak = 0;
         }
     }
 }

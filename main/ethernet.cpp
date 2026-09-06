@@ -28,6 +28,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "events.h"
+#include "crash_blackbox.h"
 #include "system_reset.h"
 
 static const char *TAG = "Ethernet";
@@ -365,6 +366,9 @@ void Ethernet::_handleETHEvent(esp_event_base_t event_base, int32_t event_id, vo
     case ETHERNET_EVENT_DISCONNECTED:
         _isConnected.store(false);
         ESP_LOGI(TAG, "Link Down");
+        // Event snapshot: link loss often clusters around the #362 failure
+        // states (wedge, watchdog resets). Pin the blackbox to this moment.
+        crash_blackbox_snapshot_now(0);
         events_emit(EVENT_ETH_LINK_DOWN, nullptr);
         break;
     case ETHERNET_EVENT_START:
