@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.7-Beta.6] - 2026-09-06
+
+### Changes
+- fix(stability): tcpip liveness sentinel, network-watchdog blindness fix, hardening (#362)
+- docs: third-party audit response (Fable) for issue #362 - app delta exonerated, evidence points to IDF-internal/hardware
+- docs: compact token-efficient audit brief for issue #362 (Fable mission: initiator wild-write audit + INTLEVEL holder)
+- docs: handoff v2 for issue #362 - amplification topology mapped, initiator remains open; includes audit of first external AI response
+- docs: AI investigation handoff for issue #362 - full state, eliminated paths, open leads, response contract
+- feat(stability): network wedge self-healing + event-driven blackbox snapshots (#362)
+- docs(planning): #362 status update - delta isolated to FreeRTOS SMP kernel, decision tree for field results
+- chore: update manifests for v2.2.7-Beta.5
+
 ## [2.2.7-Beta.5] - 2026-09-04
 
 ### Changes
