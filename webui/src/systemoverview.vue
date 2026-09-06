@@ -68,7 +68,13 @@
             <div class="kv-row"><span>{{ copy.target }}</span><strong>{{ data.target || '—' }}</strong></div>
             <div class="kv-row"><span>{{ copy.cores }}</span><strong>{{ data.chipCores ?? '—' }}</strong></div>
             <div class="kv-row"><span>{{ copy.chipRevision }}</span><strong>{{ data.chipRevision ?? '—' }}</strong></div>
-            <div class="kv-row"><span>{{ copy.resetReason }}</span><strong>{{ data.resetReasonText || data.resetReason || '—' }}</strong></div>
+            <div class="kv-row">
+              <span>{{ copy.resetReason }}</span>
+              <strong class="reset-reason-cell">
+                {{ data.resetReasonText || data.resetReason || '—' }}
+                <span v-if="resetClass" class="meta-chip" :class="resetClass.tone">{{ resetClass.label }}</span>
+              </strong>
+            </div>
             <div class="kv-row"><span>{{ copy.psram }}</span><strong>{{ data.psramAvailable ? copy.available : copy.notAvailable }}</strong></div>
             <div v-if="data.psramAvailable" class="kv-row"><span>{{ copy.psramTotal }}</span><strong>{{ formatBytes(data.totalPsram) }}</strong></div>
             <div v-if="data.psramAvailable" class="kv-row"><span>{{ copy.psramFree }}</span><strong>{{ formatBytes(data.freePsram) }}</strong></div>
@@ -166,6 +172,9 @@ const translations = {
     cores: 'CPU-Kerne',
     chipRevision: 'Chip-Revision',
     resetReason: 'Letzter Resetgrund',
+    resetBadgeTcpip: 'Netzwerk-Stillstand',
+    resetBadgeNetwdt: 'Netzwerk-Wächter',
+    resetBadgeWatchdog: 'Watchdog',
     psram: 'PSRAM',
     psramTotal: 'PSRAM gesamt',
     psramFree: 'PSRAM frei',
@@ -221,6 +230,9 @@ const translations = {
     cores: 'CPU cores',
     chipRevision: 'Chip revision',
     resetReason: 'Last reset reason',
+    resetBadgeTcpip: 'Network stall',
+    resetBadgeNetwdt: 'Network watchdog',
+    resetBadgeWatchdog: 'Watchdog',
     psram: 'PSRAM',
     psramTotal: 'Total PSRAM',
     psramFree: 'Free PSRAM',
@@ -261,6 +273,19 @@ const data = ref({ webui: {}, logs: {} })
 
 const usageWidth = computed(() => Math.min(100, Math.max(0, Number(data.value.internalHeapUsagePercent) || 0)))
 
+// Classifies the last reset reason so the new self-healing diagnostics
+// (firmware 2.2.7-Beta.6+) are recognizable at a glance: 'tcpip stalled'
+// means the lwIP receive path died and the device recovered itself,
+// 'net watchdog' a link-layer failure. Older firmwares without these
+// texts simply show no badge.
+const resetClass = computed(() => {
+  const t = String(data.value.resetReasonText || data.value.resetReason || '')
+  if (t.includes('tcpip stalled')) return { tone: 'danger-chip', label: copy.value.resetBadgeTcpip }
+  if (t.includes('net watchdog')) return { tone: 'warning-chip', label: copy.value.resetBadgeNetwdt }
+  if (/watchdog/i.test(t)) return { tone: 'warning-chip', label: copy.value.resetBadgeWatchdog }
+  return null
+})
+
 const formatBytes = (value) => {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
   const bytes = Number(value)
@@ -295,6 +320,8 @@ onMounted(loadOverview)
 .system-overview-page { display: flex; flex-direction: column; gap: var(--section-gap); }
 .success-chip { color: var(--color-success); }
 .warning-chip, .warning-text { color: var(--color-warning); }
+.danger-chip { color: var(--color-danger); }
+.reset-reason-cell { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .overview-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }
 .overview-card, .detail-card { border: 1px solid var(--color-border-light); background: var(--color-surface); box-shadow: var(--shadow-md); }
 .overview-card { min-height: 135px; border-radius: var(--radius-lg); padding: var(--card-padding); display: flex; flex-direction: column; gap: var(--space-2); }
