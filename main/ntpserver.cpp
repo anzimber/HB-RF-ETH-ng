@@ -135,6 +135,9 @@ void NtpServer::start()
     }
 }
 
+// LATENT HAZARD (issue #362 audits): vTaskDelete of a task that may hold
+// lwIP locks would freeze the tcpip thread silently. No runtime callers;
+// must be made cooperative before it ever becomes reachable.
 void NtpServer::stop()
 {
     if (_pcb) {

@@ -53,6 +53,7 @@
 #include "reset_info.h"
 #include "crash_blackbox.h"
 #include "ping_service.h"
+#include "rawuartudplistener.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "sysinfo.h"
@@ -1291,6 +1292,11 @@ static constexpr TickType_t HEAP_WATCHDOG_INTERVAL_TICKS = pdMS_TO_TICKS(60000);
 // the probe too; the resulting single restart is harmless because the relay
 // is dead during that window anyway.
 static constexpr int NET_WATCHDOG_THRESHOLD_CYCLES = 5;      // ~5 * 60s = 5 min
+// How long a bound CCU session may go without ANY received datagram before
+// the tcpip receive path is declared dead (keepalive cadence is 1 s, the
+// worker's own timeout is 10 s - 90 s leaves generous margin for CCU
+// maintenance windows that do not fully drop the session).
+static constexpr uint32_t NET_WATCHDOG_TCPIP_STALE_MS = 90 * 1000;
 static constexpr uint32_t NET_WATCHDOG_PING_TIMEOUT_MS = 2000;
 
 static void heap_watchdog_task(void *pvParameters)
@@ -1378,7 +1384,52 @@ static void heap_watchdog_task(void *pvParameters)
             low_heap_streak = 0;
         }
 
-        // ---- Network wedge detector (see comment above the constants) ----
+        // ---- tcpip liveness sentinel (issue #362) ----
+        // The gateway ping below cannot detect a dead tcpip thread: creating
+        // the raw ping socket is itself a blocking trip through tcpip, so
+        // the watchdog would park inside socket() exactly when it matters
+        // (found by two independent code reviews). The sentinel instead
+        // compares timestamps: the lwIP receive callback stamps
+        // raw_uart_last_tcpip_rx_ms() on tcpip_thread for every CCU
+        // datagram, and this check never touches the network.
+        //
+        // Interpretation: the CCU sends keepalives every second. If the
+        // worker were alive but the CCU silent, the worker itself clears
+        // the session after its 10 s timeout - the gate closes. A session
+        // that is STILL active after 90 s without a single received
+        // datagram therefore means the worker is frozen inside a blocking
+        // send and tcpip stopped delivering: the wedge state. Restart with
+        // diagnostics instead of hanging forever.
+        {
+            const uint32_t last_rx_ms = raw_uart_last_tcpip_rx_ms();
+            if (last_rx_ms != 0 && raw_uart_session_active() &&
+                g_ethernet != NULL && g_ethernet->isConnected())
+            {
+                const uint32_t now_ms =
+                    (uint32_t)(esp_timer_get_time() / 1000);
+                const uint32_t stale_ms = now_ms - last_rx_ms;
+                if (stale_ms >= NET_WATCHDOG_TCPIP_STALE_MS)
+                {
+                    crash_blackbox_snapshot_now((uint32_t)low_heap_streak);
+                    // Keep in sync with last_diag_buffer[96] in reset_info.cpp.
+                    char diag[80];
+                    snprintf(diag, sizeof(diag),
+                             "tcpip stalled: no RX for %us, session active, free=%u",
+                             (unsigned)(stale_ms / 1000),
+                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+                    ESP_LOGE(TAG, "lwIP receive path dead (CCU session active) - restarting (%s)", diag);
+                    LogManager::instance().saveCrashTailNvs("tcpip_stalled");
+                    ResetInfo::storeResetReason(RESET_REASON_WATCHDOG, diag);
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    esp_restart();
+                }
+            }
+        }
+
+        // ---- Link-layer wedge detector (gateway probe) ----
+        // Only reached while the sentinel above is quiet (tcpip delivering),
+        // so the ping cannot park the watchdog. Covers failures below lwIP:
+        // dead MAC/PHY/link with the stack itself still serving API calls.
         if (g_ethernet != NULL && g_ethernet->isConnected())
         {
             ip4_addr_t ip, netmask, gw, dns1, dns2;
@@ -1400,7 +1451,7 @@ static void heap_watchdog_task(void *pvParameters)
                         net_fail_streak = 0;
                     }
                 }
-                else
+                else if (rtt_ms == PING_SERVICE_TIMEOUT)
                 {
                     net_fail_streak++;
                     // Capture the wedge onset before anything else happens
@@ -1430,6 +1481,13 @@ static void heap_watchdog_task(void *pvParameters)
                         vTaskDelay(pdMS_TO_TICKS(200));
                         esp_restart();
                     }
+                }
+                else
+                {
+                    // PING_SERVICE_DNS_ERROR / PING_SERVICE_INTERNAL: the
+                    // probe infrastructure itself failed (memory, socket,
+                    // task). Counting these as "gateway unreachable" would
+                    // misattribute a restart; skip the cycle instead.
                 }
             }
             else

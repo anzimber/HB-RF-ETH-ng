@@ -78,6 +78,22 @@ static MetricsCounter g_wait_over_1s("hbrfeth_udp_queue_wait_over_1s_total",
 static_assert(std::atomic<uint32_t>::is_always_lock_free,
               "Raw-UART sender lifetime guard must be native 32-bit");
 
+// tcpip liveness sentinel: updated on tcpip_thread for every accepted
+// datagram (see header). A 32-bit atomic store; readers poll without any
+// network interaction, which is the whole point — every other "is the
+// network alive" probe (ping, socket create) is itself a blocking trip
+// through the tcpip thread and therefore freezes exactly when it is
+// needed most (audited by two independent code reviews, issue #362).
+static std::atomic<uint32_t> g_last_tcpip_rx_ms{0};
+static RawUartUdpListener *s_listener_instance = nullptr;
+
+uint32_t raw_uart_last_tcpip_rx_ms(void) { return g_last_tcpip_rx_ms.load(std::memory_order_relaxed); }
+
+bool raw_uart_session_active(void)
+{
+    return s_listener_instance != nullptr && s_listener_instance->sessionActive();
+}
+
 void raw_uart_get_latency(raw_uart_latency_t *out)
 {
     if (!out) return;
@@ -127,6 +143,7 @@ RawUartUdpListener::RawUartUdpListener(RadioModuleConnector *radioModuleConnecto
     atomic_init(&_remoteAddress, 0u);
     atomic_init(&_counter, 0);
     atomic_init(&_endpointConnectionIdentifier, 1);
+    s_listener_instance = this;
 }
 
 bool RawUartUdpListener::handlePacket(pbuf *pb, ip4_addr_t addr, uint16_t port)
@@ -693,9 +710,16 @@ bool RawUartUdpListener::_udpReceivePacket(pbuf *pb, const ip_addr_t *addr, uint
     event.port = port;
     event.enqueued_us = (uint32_t)esp_timer_get_time();
 
+    // Liveness sentinel: this runs on tcpip_thread — a successful store
+    // here is the cheapest possible proof that the lwIP receive machinery
+    // is still alive. Must stay lock-free and log-free: this callback must
+    // never block or spend time on the network stack's own thread (the
+    // queue-full case deliberately stays silent; g_rx_drops records it).
+    g_last_tcpip_rx_ms.store((uint32_t)(esp_timer_get_time() / 1000),
+                             std::memory_order_relaxed);
+
     if (xQueueSend(queue, &event, 0) != pdPASS)
     {
-        ESP_LOGW(TAG, "UDP queue full, dropping packet");
         g_rx_drops.inc();
         return false;
     }

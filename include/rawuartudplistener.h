@@ -63,6 +63,10 @@ public:
 
     ip4_addr_t getConnectedRemoteAddress();
 
+    // True while a CCU raw-uart session is bound (remote port nonzero).
+    // Backs raw_uart_session_active(); see the liveness sentinel notes.
+    bool sessionActive() const { return _remotePort.load(std::memory_order_relaxed) != 0; }
+
     void start();
     esp_err_t stop();
 
@@ -85,6 +89,20 @@ typedef struct {
 } raw_uart_latency_t;
 
 void raw_uart_get_latency(raw_uart_latency_t *out);
+
+// tcpip liveness sentinel (#362): uptime ms of the most recent datagram that
+// reached the lwIP receive callback. Written from tcpip_thread context on
+// every accepted datagram; readers never touch the network. A CCU session
+// that is still active (session_active() below) while this timestamp goes
+// stale means the worker itself is frozen inside a blocking send and the
+// tcpip thread is no longer delivering — the initiator state this firmware
+// must detect and self-heal from.
+uint32_t raw_uart_last_tcpip_rx_ms(void);
+
+// True while a CCU raw-uart session is bound (remote port nonzero). The
+// liveness check is gated on this: without a session, a stale timestamp is
+// expected, not a fault.
+bool raw_uart_session_active(void);
 
 // Clear the high-water marks so an operator can observe a fresh window after
 // changing something, instead of reading a mark set days earlier. The

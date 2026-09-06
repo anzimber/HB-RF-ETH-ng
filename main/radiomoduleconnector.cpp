@@ -112,6 +112,11 @@ void RadioModuleConnector::start()
     resetModule();
 }
 
+// LATENT HAZARD (issue #362 audits): deleting the UART task while it may be
+// blocked inside tcpip_api_call() leaves a stack-resident call descriptor
+// that the tcpip thread later signals - memory corruption. There are no
+// runtime callers today; if this ever becomes reachable, it must use a
+// cooperative rendezvous like RawUartUdpListener::stop() instead.
 void RadioModuleConnector::stop()
 {
     if (_tHandle) {
@@ -182,7 +187,13 @@ void RadioModuleConnector::_serialQueueHandler()
                     break;
                 }
                 {
-                    int read = uart_read_bytes(UART_NUM_1, buffer, event.size, portMAX_DELAY);
+                    // Bounded wait: a portMAX_DELAY here can never be
+                    // aborted, and a driver flush racing this read would
+                    // park the relay task forever on bytes that never come.
+                    // 100 ms is orders above the 115200 drain time of the
+                    // largest event; a zero return simply waits for the
+                    // next UART_DATA event.
+                    int read = uart_read_bytes(UART_NUM_1, buffer, event.size, pdMS_TO_TICKS(100));
                     if (read > 0) _streamParser->append(buffer, (uint16_t)read);
                 }
                 break;
